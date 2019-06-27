@@ -327,7 +327,7 @@ mesos::internal::slave::Flags::Flags()
 #ifndef __WINDOWS__
   add(&Flags::switch_user,
       "switch_user",
-      "If set to `true`, the agent will attempt to run tasks as\n"
+      "Some modifications. If set to `true`, the agent will attempt to run tasks as\n"
       "the `user` who submitted them (as defined in `FrameworkInfo`)\n"
       "(this requires `setuid` permission and that the given `user`\n"
       "exists on the agent).\n"
