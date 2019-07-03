@@ -136,6 +136,21 @@ def get_tasks(master):
 
     return data[key]
 
+def get_containers(agent):
+    """
+    Get the containers in a Mesos agent.
+    """
+    endpoint = "containers"
+
+    try:
+        data = http.get_json(agent, endpoint)
+    except Exception as exception:
+        raise CLIException(
+            "Could not open '/{endpoint}' on agent: {error}"
+            .format(endpoint=endpoint, error=exception))
+
+    return data
+
 class TaskIO():
     """
     Object used to stream I/O between a
@@ -852,3 +867,102 @@ class TaskIO():
                                 'columns': int(columns)}}}}}}
 
         self.input_queue.put(self.encoder.encode(message))
+
+class ContainerIO(TaskIO):
+    """
+    Object used to stream I/O between a
+    running Mesos container and the local terminal.
+
+    :param container_id: container ID
+    :type container_id: str
+    :param cmd: a command to launch inside the container
+    :type cmd: str
+    :param args: Additional arguments for the command
+    :type args: str
+    :param interactive: whether to attach STDIN of the current
+                        terminal to the new command being launched
+    :type interactive: bool
+    :param tty: whether to allocate a tty for this command and attach
+                the local terminal to it
+    :type tty: bool
+    """
+    # pylint: disable=too-many-instance-attributes
+
+    # The interval to send heartbeat messages to
+    # keep persistent connections alive.
+    def __init__(self, agent, container_id):
+        # Get the task and make sure its container was launched by the UCR.
+        # Since task's containers are launched by the UCR by default, we want
+        # to allow most tasks to pass through unchecked. The only exception is
+        # when a task has an explicit container specified and it is not of type
+        # "MESOS". Having a type of "MESOS" implies that it was launched by the
+        # UCR -- all other types imply it was not.
+        try:
+            containers = get_containers(agent)
+        except Exception as exception:
+            raise CLIException("Unable to get containers from"
+                               " agent '{agent}': {error}"
+                               .format(agent=agent, error=exception))
+
+        matching_containers = [c for c in containers
+                               if c["container_id"] == container_id]
+
+        if not matching_containers:
+            raise CLIException("Unable to find running container"
+                               " '{container_id}' from leading agent '{agent}'"
+                               .format(container_id=container_id, agent=agent))
+
+        if len(matching_containers) > 1:
+            raise CLIException("More than one container matching id '{id}'"
+                               .format(id=container_id))
+
+        self.agent_url = mesos.http.simple_urljoin(agent, "api/v1")
+        self.container_id = {'value': container_id}
+
+        # Set up a recordio encoder and decoder
+        # for any incoming and outgoing messages.
+        self.encoder = recordio.Encoder(
+            lambda s: bytes(json.dumps(s, ensure_ascii=False), "UTF-8"))
+        self.decoder = recordio.Decoder(
+            lambda s: json.loads(s.decode("UTF-8")))
+
+        # Set up queues to send messages between threads used for
+        # reading/writing to STDIN/STDOUT/STDERR and threads
+        # sending/receiving data over the network.
+        self.input_queue = Queue()
+        self.output_queue = Queue()
+
+        # Set up an event to block attaching
+        # input until attaching output is complete.
+        self.attach_input_event = threading.Event()
+        self.attach_input_event.clear()
+
+        # Set up an event to block printing the output
+        # until an attach input event has successfully
+        # been established.
+        self.print_output_event = threading.Event()
+        self.print_output_event.clear()
+
+        # Set up an event to block the main thread
+        # from exiting until signaled to do so.
+        self.exit_event = threading.Event()
+        self.exit_event.clear()
+
+        # Use a class variable to store exceptions thrown on
+        # other threads and raise them on the main thread before
+        # exiting.
+        self.exception = None
+
+        # Default values for the containerIO.
+        self.cmd = None
+        self.args = None
+        self.interactive = False
+        self.tty = False
+        self.output_thread_entry_point = None
+
+        # Allow an exit sequence to be used to break the CLIs attachment to
+        # the remote container. Depending on the call, this may be disabled, or
+        # the exit sequence to be used may be overwritten.
+        self.supports_exit_sequence = False
+        self.exit_sequence = b'\x10\x11'  # Ctrl-p, Ctrl-q
+        self.exit_sequence_detected = False

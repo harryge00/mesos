@@ -25,6 +25,8 @@ import cli
 
 from cli.constants import DEFAULT_MASTER_IP
 from cli.constants import DEFAULT_MASTER_PORT
+from cli.constants import DEFAULT_AGENT_IP
+from cli.constants import DEFAULT_AGENT_PORT
 from cli.exceptions import CLIException
 
 
@@ -118,6 +120,30 @@ class Config():
                                        .format(error=exception))
 
         return master
+
+    def agent(self):
+        """
+        Parse the agent info in the configuration file and return
+        its IP address and the port where Mesos is running.
+        """
+        agent = "{ip}:{port}".format(ip=DEFAULT_AGENT_IP,
+                                     port=DEFAULT_AGENT_PORT)
+
+        if "agent" in self.data:
+            if not isinstance(self.data["agent"], dict):
+                raise CLIException("The 'agent' field must be a dictionary")
+
+            if "address" in self.data["agent"]:
+                agent_address = self.data["agent"]["address"]
+                try:
+                    agent = cli.util.sanitize_address(agent_address)
+                except Exception as exception:
+                    raise CLIException("The 'agent' address {address} is"
+                                       " formatted incorrectly: {error}"
+                                       .format(address=agent_address,
+                                               error=exception))
+
+        return agent
 
     def plugins(self):
         """
